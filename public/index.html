@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<title>Chatbot Mỹ Tiên — Phỏng vấn (Giọng Ban Mai)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{--primary:#f06b9a;--muted:#666;}
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;}
+  body{background:linear-gradient(180deg,#f4f6f8 0%,#eef2f6 100%);
+        display:flex;align-items:center;justify-content:center;padding:28px}
+  .card{width:460px;max-width:96%;background:#fff;border-radius:14px;
+        box-shadow:0 12px 40px rgba(14,18,30,0.08);padding:18px;text-align:center}
+  h1{margin:6px 0;color:var(--primary);font-size:20px}
+  p.lead{margin:6px 0 12px;color:var(--muted);font-size:14px}
+  .avatar-frame{width:300px;height:300px;border-radius:18px;overflow:hidden;
+                margin:12px auto;position:relative;background-size:cover;
+                background-position:center;transition:transform 0.25s ease}
+  .avatar-frame.with-img{background-image:url('office_bg.jpg')}
+  .avatar-frame::after{content:'';position:absolute;inset:0;
+      background:linear-gradient(to top,rgba(0,0,0,0.12),rgba(255,255,255,0.02));
+      pointer-events:none}
+  .avatar-wrapper{position:relative;width:100%;height:100%;display:flex;
+      align-items:center;justify-content:center;z-index:2}
+  .avatar{width:92%;height:92%;object-fit:cover;border-radius:10px;
+      transition:transform 0.12s ease,filter 0.12s ease}
+  .eyes::before,.eyes::after{content:"";position:absolute;top:44%;width:22%;height:6%;
+      background:rgba(0,0,0,0.6);border-radius:50%;opacity:0;
+      transition:opacity 0.12s ease;pointer-events:none}
+  .eyes::before{left:30%}.eyes::after{right:30%}
+  .avatar-wrapper.blink .eyes::before,.avatar-wrapper.blink .eyes::after{opacity:1}
+  .avatar-wrapper.smile .avatar{transform:scale(1.02) translateY(-3px);
+      filter:brightness(1.05)}
+  .nameplate{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);
+      background:rgba(0,0,0,0.65);color:#fff;padding:6px 12px;border-radius:999px;
+      font-weight:600;font-size:15px;z-index:3;
+      box-shadow:0 6px 18px rgba(0,0,0,0.18)}
+  .controls{display:flex;gap:8px;justify-content:center;margin-top:10px}
+  button{background:var(--primary);color:#fff;border:0;border-radius:8px;
+      padding:10px 14px;cursor:pointer}
+  button[disabled]{opacity:0.6;cursor:not-allowed}
+  .secondary{background:#7a8a98;padding:10px 12px}
+  .status{margin-top:10px;color:var(--muted);font-size:13px}
+  @media (max-width:520px){.avatar-frame{width:240px;height:240px}}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Chatbot HR — Mỹ Tiên 💼</h1>
+    <p class="lead">Phỏng vấn nhân sự — bằng tiếng Việt (Giọng Ban Mai)</p>
+
+    <div id="avatarFrame" class="avatar-frame with-img parallax">
+      <div class="avatar-wrapper" id="avatarWrap">
+        <img id="avatar" class="avatar" src="avatar_hr.png" alt="Mỹ Tiên" />
+        <div class="eyes"></div>
+        <div class="nameplate">Mỹ Tiên — Nhân sự</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn">🎙️ Bắt đầu phỏng vấn</button>
+      <button id="stopBtn" disabled class="secondary">⏹ Dừng</button>
+    </div>
+
+    <div class="status" id="statusText">Nhấn "Bắt đầu phỏng vấn" để khởi động.</div>
+  </div>
+
+<script>
+const QUESTIONS = [
+  "Chào bạn, hôm nay bạn thế nào?",
+  "Tôi thấy bạn thường đến họp hơi trễ vài phút. Bạn nghĩ sao về điều này?",
+  "Tôi đã giúp bạn hoàn thành phần bài của bạn rồi đó.",
+  "Cảm ơn bạn vì cuộc trao đổi hôm nay."
+];
+
+let current = 0, recognition = null, isRunning = false, waitingGoodbye = false, firstGreetingDone = false;
+const statusEl = document.getElementById('statusText');
+const avatarWrap = document.getElementById('avatarWrap');
+const avatarFrame = document.getElementById('avatarFrame');
+function setStatus(t){ statusEl.textContent=t; }
+
+/* ==== SPEAK ==== */
+function playAudioBlob(blob){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(blob);
+    const audio=new Audio(url);
+    audio.volume=1.0;
+    const p=audio.play();
+    if(p)p.catch(()=>alert("Trình duyệt chặn phát tự động, hãy click lại."));
+    audio.onended=()=>{URL.revokeObjectURL(url);resolve();};
+    audio.onerror=e=>{URL.revokeObjectURL(url);reject(e);};
+  });
+}
+async function speakServer(msg){
+  try{
+    const r=await fetch('/api/tts',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text:msg})
+    });
+    if(r.status===200){
+      const b=await r.blob();
+      await playAudioBlob(b);
+      return;
+    }
+  }catch(e){console.error("TTS error",e);}
+}
+
+/* ==== GỌI GPT (đơn giản, không stream) ==== */
+async function streamGPTReply(userInput){
+  try{
+    const r=await fetch('/api/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:userInput,contextIndex:current})
+    });
+    const j=await r.json();
+    const reply=j.reply?.trim()||"";
+    if(reply){
+      let cleanText=reply.replace(/\s+/g," ").replace(/[0-9]+/g,"").trim();
+      await speakServer(cleanText);
+      return cleanText;
+    }
+  }catch(e){console.error("Chat fetch error",e);}
+  return "";
+}
+
+/* ==== ANIM ==== */
+function startAutoBlink(){
+  setInterval(()=>{
+    avatarWrap.classList.add('blink');
+    setTimeout(()=>avatarWrap.classList.remove('blink'),160);
+  },3800+Math.random()*1200);
+}
+async function playSpeakingAnimation(){
+  avatarWrap.classList.add('smile');
+  avatarFrame.style.transform='translateY(-4px) scale(1.01)';
+  setTimeout(()=>{
+    avatarWrap.classList.remove('smile');
+    avatarFrame.style.transform='';
+  },1300);
+}
+
+/* ==== SPEECH ==== */
+function initRecognition(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){alert("Trình duyệt không hỗ trợ voice. Dùng Chrome.");return null;}
+  const r=new SR();
+  r.lang='vi-VN';
+  r.interimResults=false;
+  r.maxAlternatives=1;
+  r.onstart=()=>setStatus("🎤 Đang nghe...");
+  r.onerror=e=>setStatus("Không nghe rõ, nói lại nhé!");
+  r.onend=()=>setStatus("⏳ Đang xử lý...");
+
+  r.onresult=async e=>{
+    const userText=e.results[0][0].transcript;
+    console.log("🎙️ Bạn nói:", userText); // ✅ LOG 1: hiển thị giọng nói nhận được
+    setStatus("🧠 Đang phản hồi...");
+    await playSpeakingAnimation();
+
+    if(!firstGreetingDone){
+      const reply=await streamGPTReply(userText);
+      console.log("🤖 GPT trả lời:", reply); // ✅ LOG 2: hiển thị phản hồi GPT
+      firstGreetingDone=true;
+      await speakServer(QUESTIONS[current]);
+      r.start();
+      return;
+    }
+
+    if(waitingGoodbye){
+      await speakServer("Rất vui được trò chuyện cùng bạn. Hẹn gặp lại!");
+      setStatus("✅ Kết thúc phỏng vấn.");
+      isRunning=false; waitingGoodbye=false;
+      return;
+    }
+
+    const reply=await streamGPTReply(userText);
+    console.log("🤖 GPT trả lời:", reply); // ✅ LOG 2: phản hồi ở các câu tiếp theo
+    current++;
+    if(current<QUESTIONS.length){
+      await speakServer(QUESTIONS[current]);
+      r.start();
+    }else{
+      waitingGoodbye=true;
+      await speakServer("Cảm ơn bạn vì cuộc trao đổi hôm nay.");
+      r.start();
+    }
+  };
+  return r;
+}
+
+/* ==== START ==== */
+document.getElementById('startBtn').onclick=async()=>{
+  if(isRunning)return;
+  isRunning=true;current=0;waitingGoodbye=false;firstGreetingDone=false;
+  recognition=initRecognition();
+  await playSpeakingAnimation();
+  await speakServer("Xin chào, tôi là Mỹ Tiên, phụ trách nhân sự. Rất vui được gặp bạn hôm nay!");
+  recognition.start();
+};
+document.getElementById('stopBtn').onclick=()=>{
+  if(recognition)recognition.stop();
+  isRunning=false;
+  setStatus("Đã dừng.");
+};
+startAutoBlink();
+</script>
+</body>
+</html>
